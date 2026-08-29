@@ -1,0 +1,29 @@
+# Environment/secrets
+.env
+.env.*
+
+# Allow the example environment file
+!.env.example
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Caddy persistent data
+caddy_data/
+caddy_config/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

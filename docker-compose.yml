@@ -1,0 +1,31 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks:
+      - frontend
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - ./api/data:/app/data
+    networks:
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  frontend:
