@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import pytz
 
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
@@ -560,7 +561,7 @@ def add_sequence_entry(
 
     entry = SequenceEntry(
         user_id=user_id,
-        timestamp=datetime.now(timezone.utc)
+        timestamp=datetime.now(pytz.timezone("America/New_York"))
     )
 
     db.add(entry)
