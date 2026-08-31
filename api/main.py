@@ -451,7 +451,8 @@ def get_next_user(
 
     return {
         "next_user_id": next_user.user_id,
-        "position": next_user.position
+        "position": next_user.position,
+        "name": db.get(User, next_user.user_id).name
     }
 
 
