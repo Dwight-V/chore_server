@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 pytz
+pytest
+httpx
