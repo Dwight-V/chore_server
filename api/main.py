@@ -522,8 +522,9 @@ def get_sequence_entries(
             detail="Sequence not found"
         )
 
-    return (
-        db.query(SequenceEntry)
+    entries = (
+        db.query(SequenceEntry, User)
+        .join(User, SequenceEntry.user_id == User.id)
         .filter(
             SequenceEntry.sequence_id == sequence_id
         )
@@ -531,6 +532,16 @@ def get_sequence_entries(
         .all()
     )
 
+    return [
+        {
+            "id": entry.id,
+            "sequence_id": entry.sequence_id,
+            "user_id": entry.user_id,
+            "name": user.name,
+            "timestamp": entry.timestamp,
+        }
+        for entry, user in entries
+    ]
 
 @app.get(
     "/sequences/{sequence_id}/entries/recent",
@@ -793,4 +804,10 @@ def add_sequence_entry(
     db.commit()
     db.refresh(entry)
 
-    return entry
+    return {
+        "id": entry.id,
+        "sequence_id": entry.sequence_id,
+        "user_id": entry.user_id,
+        "name": user.name,
+        "timestamp": entry.timestamp,
+    }
