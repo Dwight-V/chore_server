@@ -198,6 +198,7 @@ class SequenceEntryResponse(BaseModel):
     id: int
     sequence_id: int
     user_id: int
+    name: str
     timestamp: datetime
 
 
@@ -566,8 +567,15 @@ def get_recent_sequence_entry(
             detail="No sequence entries exist"
         )
 
-    return entry
+    user = db.get(User, entry.user_id)
 
+    return {
+        "id": entry.id,
+        "sequence_id": entry.sequence_id,
+        "user_id": entry.user_id,
+        "name": user.name,
+        "timestamp": entry.timestamp,
+    }
 
 # ============================================================
 # NEXT USER
