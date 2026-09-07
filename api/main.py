@@ -1,8 +1,11 @@
 from datetime import datetime
+from pathlib import Path
 
 import pytz
 
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine,
@@ -211,17 +214,21 @@ app = FastAPI(
     description="API for users and user-created sequences."
 )
 
+# ============================================================
+# WEBPAGE
+# ============================================================
 
-# ============================================================
-# BASIC
-# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+
+app.mount(
+    "/static",
+    StaticFiles(directory=BASE_DIR / "static"),
+    name="static",
+)
 
 @app.get("/")
-def root():
-    return {
-        "message": "User Sequence API is running"
-    }
-
+async def home():
+    return FileResponse(BASE_DIR / "static" / "index.html")
 
 # ============================================================
 # USERS
