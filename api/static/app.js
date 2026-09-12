@@ -252,7 +252,7 @@ async function getNextUser(sequenceId) {
         const result = await response.json();
 
         output.value =
-            `${result.name} (position ${result.position})`;
+            `${result.name}`;
 
     } catch (error) {
         output.value = error.message;
