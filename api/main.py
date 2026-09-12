@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 
 import pytz
@@ -21,6 +21,7 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 
+APP_TIMEZONE = pytz.timezone("America/New_York")
 
 # ============================================================
 # DATABASE
@@ -158,9 +159,192 @@ class SequenceEntry(Base):
         nullable=False
     )
 
+class SequenceWindow(Base):
+    __tablename__ = "sequence_windows"
+
+    id: Mapped[int] = mapped_column(
+        primary_key=True
+    )
+
+    sequence_id: Mapped[int] = mapped_column(
+        ForeignKey("sequences.id"),
+        nullable=False
+    )
+
+    start_day: Mapped[int] = mapped_column(
+        nullable=False
+    )
+
+    start_time: Mapped[time] = mapped_column(
+        nullable=False
+    )
+
+    end_day: Mapped[int] = mapped_column(
+        nullable=False
+    )
+
+    end_time: Mapped[time] = mapped_column(
+        nullable=False
+    )
+
+    next_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False
+    )
+
 
 Base.metadata.create_all(engine)
 
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def timestamp_matches_window(
+    timestamp: datetime,
+    window: SequenceWindow,
+) -> bool:
+    """
+    Check whether timestamp falls inside a recurring weekly window.
+
+    Weekdays:
+        Monday = 0
+        ...
+        Sunday = 6
+
+    The interval is [start, end), so the start is inclusive
+    and the end is exclusive.
+    """
+
+    current = (
+        timestamp.weekday() * 24 * 60
+        + timestamp.hour * 60
+        + timestamp.minute
+        + timestamp.second / 60
+    )
+
+    start = (
+        window.start_day * 24 * 60
+        + window.start_time.hour * 60
+        + window.start_time.minute
+        + window.start_time.second / 60
+    )
+
+    end = (
+        window.end_day * 24 * 60
+        + window.end_time.hour * 60
+        + window.end_time.minute
+        + window.end_time.second / 60
+    )
+
+    # Same point means a full-week window.
+    if start == end:
+        return True
+
+    # Normal interval, e.g. Monday 08:00 -> Wednesday 17:00
+    if start < end:
+        return start <= current < end
+
+    # Wraps around Sunday -> Monday
+    # e.g. Sunday 22:00 -> Monday 02:00
+    return current >= start or current < end
+
+def calculate_next_user(sequence_id: int, db: Session) -> SequenceOrder:
+    """
+    Determine the next user for a sequence.
+
+    Priority:
+    1. If the most recent entry falls inside a SequenceWindow,
+       that window's next_user_id is used.
+    2. Otherwise, follow the normal SequenceOrder.
+    """
+
+    # Get sequence order
+    ordered_users = (
+        db.query(SequenceOrder)
+        .filter(SequenceOrder.sequence_id == sequence_id)
+        .order_by(SequenceOrder.position)
+        .all()
+    )
+
+    if not ordered_users:
+        raise HTTPException(
+            status_code=400,
+            detail="Sequence has no users"
+        )
+
+    # Get most recent entry
+    last_entry = (
+        db.query(SequenceEntry)
+        .filter(SequenceEntry.sequence_id == sequence_id)
+        .order_by(SequenceEntry.id.desc())
+        .first()
+    )
+
+    # No entries yet -> normal first user
+    if last_entry is None:
+        return ordered_users[0]
+
+    # Check conditional windows
+
+    # SQLite/SQLAlchemy may return a naive datetime.
+    # The application timestamps entries in America/New_York.
+    timestamp = last_entry.timestamp
+
+    if timestamp.tzinfo is None:
+        timestamp = APP_TIMEZONE.localize(timestamp)
+    else:
+        timestamp = timestamp.astimezone(APP_TIMEZONE)
+
+    matching_windows = (
+        db.query(SequenceWindow)
+        .filter(SequenceWindow.sequence_id == sequence_id)
+        .all()
+    )
+
+    for window in matching_windows:
+        if timestamp_matches_window(timestamp, window):
+            target = next(
+                (
+                    order
+                    for order in ordered_users
+                    if order.user_id == window.next_user_id
+                ),
+                None
+            )
+
+            if target is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Window points to user {window.next_user_id}, "
+                        "who is not in this sequence"
+                    )
+                )
+
+            return target
+
+    # No matching window -> normal sequence progression
+    current_position = next(
+        (
+            order.position
+            for order in ordered_users
+            if order.user_id == last_entry.user_id
+        ),
+        None
+    )
+
+    if current_position is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Last entry user is not in this sequence"
+        )
+
+    next_position = current_position + 1
+
+    if next_position >= len(ordered_users):
+        next_position = 0
+
+    return ordered_users[next_position]
 
 # ============================================================
 # PYDANTIC MODELS
@@ -204,6 +388,12 @@ class SequenceEntryResponse(BaseModel):
     name: str
     timestamp: datetime
 
+class SequenceWindowCreate(BaseModel):
+    start_day: int
+    start_time: time
+    end_day: int
+    end_time: time
+    next_user_id: int
 
 # ============================================================
 # FASTAPI
@@ -608,6 +798,10 @@ def get_next_user(
 ):
     """
     Determine which user is next for this sequence.
+
+    The calculation is handled by the shared calculate_next_user()
+    function, which checks conditional windows first and then falls
+    back to the normal sequence order.
     """
 
     sequence = db.get(Sequence, sequence_id)
@@ -618,72 +812,19 @@ def get_next_user(
             detail="Sequence not found"
         )
 
-    ordered_users = (
-        db.query(SequenceOrder)
-        .filter(
-            SequenceOrder.sequence_id == sequence_id
-        )
-        .order_by(SequenceOrder.position)
-        .all()
-    )
+    next_order = calculate_next_user(sequence_id, db)
 
-    if not ordered_users:
+    user = db.get(User, next_order.user_id)
+
+    if user is None:
         raise HTTPException(
-            status_code=400,
-            detail="Sequence order has not been configured"
+            status_code=404,
+            detail="Next user not found"
         )
-
-    last_entry = (
-        db.query(SequenceEntry)
-        .filter(
-            SequenceEntry.sequence_id == sequence_id
-        )
-        .order_by(SequenceEntry.id.desc())
-        .first()
-    )
-
-    # Nothing has been submitted for this sequence.
-    if last_entry is None:
-        next_user = ordered_users[0]
-
-    else:
-        current_position = next(
-            (
-                item
-                for item in ordered_users
-                if item.user_id == last_entry.user_id
-            ),
-            None
-        )
-
-        if current_position is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Last user is no longer "
-                    "in the sequence order"
-                )
-            )
-
-        next_position = (
-            current_position.position + 1
-        )
-
-        # Wrap around.
-        if next_position > len(ordered_users):
-            next_position = 1
-
-        next_user = ordered_users[
-            next_position - 1
-        ]
-
-    user = db.get(User, next_user.user_id)
 
     return {
-        "sequence_id": sequence_id,
-        "next_user_id": next_user.user_id,
-        "position": next_user.position,
-        "name": user.name
+        "user_id": user.id,
+        "name": user.name,
     }
 
 
@@ -704,8 +845,8 @@ def add_sequence_entry(
     """
     Submit a user to a particular sequence.
 
-    The supplied user MUST be the next user
-    according to that sequence's configured order.
+    The supplied user MUST be the user returned by
+    calculate_next_user().
     """
 
     sequence = db.get(Sequence, sequence_id)
@@ -726,85 +867,21 @@ def add_sequence_entry(
             detail="User not found"
         )
 
-    ordered_users = (
-        db.query(SequenceOrder)
-        .filter(
-            SequenceOrder.sequence_id == sequence_id
-        )
-        .order_by(SequenceOrder.position)
-        .all()
-    )
+    # Determine the expected user using the shared calculation.
+    # This guarantees POST and GET /next use identical logic.
+    expected_order = calculate_next_user(sequence_id, db)
 
-    if not ordered_users:
-        raise HTTPException(
-            status_code=400,
-            detail="Sequence order has not been configured"
-        )
-
-    # Get the most recent entry for THIS sequence.
-    last_entry = (
-        db.query(SequenceEntry)
-        .filter(
-            SequenceEntry.sequence_id == sequence_id
-        )
-        .order_by(SequenceEntry.id.desc())
-        .first()
-    )
-
-    if last_entry is None:
-
-        # First submission for this sequence.
-        expected_user = ordered_users[0]
-
-    else:
-
-        current_position = next(
-            (
-                item
-                for item in ordered_users
-                if item.user_id == last_entry.user_id
-            ),
-            None
-        )
-
-        if current_position is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Last user is no longer "
-                    "in the sequence order"
-                )
-            )
-
-        next_position = (
-            current_position.position + 1
-        )
-
-        # Wrap around.
-        if next_position > len(ordered_users):
-            next_position = 1
-
-        expected_user = ordered_users[
-            next_position - 1
-        ]
-
-    # Validate sequence.
-    if user_id != expected_user.user_id:
+    if user_id != expected_order.user_id:
         raise HTTPException(
             status_code=409,
-            detail={
-                "message": "Wrong user in sequence",
-                "expected_user_id": expected_user.user_id,
-                "received_user_id": user_id
-            }
+            detail=f"Expected user {expected_order.user_id}"
         )
 
+    # Create the entry.
     entry = SequenceEntry(
         sequence_id=sequence_id,
         user_id=user_id,
-        timestamp=datetime.now(
-            pytz.timezone("America/New_York")
-        )
+        timestamp=datetime.now(APP_TIMEZONE)
     )
 
     db.add(entry)
@@ -817,4 +894,62 @@ def add_sequence_entry(
         "user_id": entry.user_id,
         "name": user.name,
         "timestamp": entry.timestamp,
+    }
+
+@app.post("/sequences/{sequence_id}/windows")
+def create_sequence_window(
+    sequence_id: int,
+    window_data: SequenceWindowCreate,
+    db: Session = Depends(get_db)
+):
+    sequence = db.get(Sequence, sequence_id)
+
+    if sequence is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Sequence not found"
+        )
+
+    user = db.get(User, window_data.next_user_id)
+
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    if not 0 <= window_data.start_day <= 6:
+        raise HTTPException(
+            status_code=400,
+            detail="start_day must be between 0 and 6"
+        )
+
+    if not 0 <= window_data.end_day <= 6:
+        raise HTTPException(
+            status_code=400,
+            detail="end_day must be between 0 and 6"
+        )
+
+    window = SequenceWindow(
+        sequence_id=sequence_id,
+        start_day=window_data.start_day,
+        start_time=window_data.start_time,
+        end_day=window_data.end_day,
+        end_time=window_data.end_time,
+        next_user_id=window_data.next_user_id,
+    )
+
+    db.add(window)
+    db.commit()
+    db.refresh(window)
+
+    return {
+        "id": window.id,
+        "sequence_id": window.sequence_id,
+        "start_day": window.start_day,
+        "start_time": window.start_time,
+        "end_day": window.end_day,
+        "end_time": window.end_time,
+        "next_user_id": user.id,
+        "name": user.name,
     }
