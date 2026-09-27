@@ -21,6 +21,9 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 
+# Send text each day for who has chores (goog num?), 
+# get rid of manual refresh and replace for when webpage loads
+
 APP_TIMEZONE = pytz.timezone("America/New_York")
 
 # ============================================================
@@ -339,12 +342,28 @@ def calculate_next_user(sequence_id: int, db: Session) -> SequenceOrder:
             detail="Last entry user is not in this sequence"
         )
 
-    next_position = current_position + 1
+        # No matching window -> normal sequence progression
+    current_index = next(
+        (
+            index
+            for index, order in enumerate(ordered_users)
+            if order.user_id == last_entry.user_id
+        ),
+        None
+    )
 
-    if next_position >= len(ordered_users):
-        next_position = 0
+    if current_index is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Last entry user is not in this sequence"
+        )
 
-    return ordered_users[next_position]
+    next_index = current_index + 1
+
+    if next_index >= len(ordered_users):
+        next_index = 0
+
+    return ordered_users[next_index]
 
 # ============================================================
 # PYDANTIC MODELS
