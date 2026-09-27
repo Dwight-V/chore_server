@@ -178,6 +178,9 @@ function showSequence(sequenceId) {
 
         </div>
     `;
+
+    getLastEntry(sequenceId);
+    getNextUser(sequenceId);
 }
 
 
